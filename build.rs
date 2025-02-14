@@ -153,7 +153,7 @@ mod generate {
         let mut builder = bindgen::builder()
             .ctypes_prefix("crate::_fake_ctypes")
             .header(wrapper_path.to_str().unwrap())
-            .whitelist_var("DRM_FOURCC_.*");
+            .allowlist_var("DRM_FOURCC_.*");
 
         // Add additional include paths
         for include_path in &extra_includes {
