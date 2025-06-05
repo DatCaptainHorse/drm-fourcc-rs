@@ -1,0 +1,115 @@
+name: Update DRM Fourcc Bindings
+
+on:
+  schedule:
+    # Run weekly on Monday at 2:00 UTC
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+  # Allow manual triggering
+
+jobs:
+  update-bindings:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Git
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+
+      - name: Create unique update branch
+        run: |
+          # Create a timestamp-based branch name
+          BRANCH_NAME="auto-update-$(date +%Y%m%d)"
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+          git checkout -b $BRANCH_NAME
+
+      - name: Install libdrm dev package
+        run: sudo apt-get update && sudo apt-get install -y libdrm-dev
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build with updated bindings
+        run: cargo build --release --features build_bindings
+
+      - name: Check for changes
+        id: check-changes
+        run: |
+          git add src/
+          if git diff --cached --quiet; then
+            echo "changes=false" >> $GITHUB_OUTPUT
+            echo "No changes detected in bindings"
+          else
+            echo "changes=true" >> $GITHUB_OUTPUT
+            echo "Changes detected in bindings"
+          fi
+
+      - name: Update Version
+        if: steps.check-changes.outputs.changes == 'true'
+        id: version
+        run: |
+          # Get current version from Cargo.toml
+          CURRENT_VERSION=$(grep '^version =' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "Current version: $CURRENT_VERSION"
+          
+          # Split the version
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+          
+          # Increment patch version
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+          echo "New version: $NEW_VERSION"
+          
+          # Update Cargo.toml with the new version
+          sed -i "s/^version = \"$CURRENT_VERSION\"/version = \"$NEW_VERSION\"/" Cargo.toml
+          
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Commit and Push Changes
+        if: steps.check-changes.outputs.changes == 'true'
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          
+          git add Cargo.toml src/
+          git commit -m "Update DRM fourcc bindings to version $NEW_VERSION"
+          git push
+
+      - name: Check for existing PRs
+        id: check-pr
+        run: |
+          PR_COUNT=$(gh pr list --state open --label automated-pr --json number | jq length)
+          echo "existing_prs=$PR_COUNT" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Close old automated PRs (optional)
+        if: steps.check-pr.outputs.existing_prs != '0' && steps.check-changes.outputs.changes == 'true'
+        run: |
+          echo "Closing existing automated PRs before creating a new one"
+          gh pr list --state open --label automated-pr --json number --jq '.[].number' | xargs -I {} gh pr close {} --comment "Closing in favor of a new automated update PR"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Pull Request
+        if: steps.check-changes.outputs.changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: main
+          branch: ${{ env.BRANCH_NAME }}
+          title: "Update DRM fourcc bindings to v${{ steps.version.outputs.new_version }}"
+          body: |
+            This PR was automatically created by the GitHub Actions workflow to update DRM fourcc bindings.
+            
+            Changes:
+            - Updated DRM fourcc bindings from Linux kernel
+            - Bumped version from ${{ steps.version.outputs.current_version }} to ${{ steps.version.outputs.new_version }}
+            
+            Please review and merge if these changes look good.
+          labels: automated-pr, dependency-update
